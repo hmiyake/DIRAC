@@ -9,6 +9,7 @@
 
 # pylint: disable=invalid-name
 
+import os
 import errno
 import json
 
@@ -18,6 +19,7 @@ import gfal2  # pylint: disable=import-error
 from DIRAC import gLogger, gConfig, S_OK, S_ERROR
 from DIRAC.Resources.Storage.GFAL2_StorageBase import GFAL2_StorageBase
 from DIRAC.Resources.Storage.Utilities import checkArgumentFormat
+from DIRAC.Core.Utilities.Grid import ldapsearchBDII
 
 
 __RCSID__ = "$Id$"
@@ -58,7 +60,14 @@ class GFAL2_SRM2Storage(GFAL2_StorageBase):
       self.log.debug("GFAL2_SRM2Storage: No protocols provided, using the default protocols.")
       self.protocolsList = self.defaultLocalProtocols
       self.log.debug('GFAL2_SRM2Storage: protocolsList = %s' % self.protocolsList)
+    # necessary information to get occupancy via BDII
+    self.host = None
+    if 'LCG_GFAL_INFOSYS' in os.environ:
+      self.host = os.environ['LCG_GFAL_INFOSYS']
 
+    self.attr = ['GlueSATotalOnlineSize', 'GlueSAFreeOnlineSize']
+ 
+      
   def __setSRMOptionsToDefault(self):
     ''' Resetting the SRM options back to default
 
@@ -184,6 +193,9 @@ class GFAL2_SRM2Storage(GFAL2_StorageBase):
       Out of the results, we keep totalsize, guaranteedsize, and unusedsize all in B.
     """
 
+    if self.protocolParameters['SpaceToken'] == '':
+      return self.__getOccupancyByBDII(*parms, **kws)
+    
     # Gfal2 extended parameter name to query the space token occupancy
     spaceTokenAttr = 'spacetoken.description?%s' % self.protocolParameters['SpaceToken']
     # gfal2 can take any srm url as a base.
@@ -214,3 +226,19 @@ class GFAL2_SRM2Storage(GFAL2_StorageBase):
     sTokenDict['Free'] = float(occupancyDict.get('unusedsize', '0'))
 
     return S_OK(sTokenDict)
+    
+  def __getOccupancyByBDII(self, *parms, **kws):
+    sTokenDict={'Total':0, 'Free':0}
+          
+    filt = "(&(GlueSAAccessControlBaseRule=VO:%s)(GlueChunkKey=GlueSEUniqueID=%s))" % (self.voName, self.protocolParameters['Host'])
+    ret = ldapsearchBDII(filt, self.attr, host = self.host)
+    if not ret['OK']:
+      return ret
+    if len(ret['Value']) > 0:
+      if 'attr' in ret['Value'][0]:
+        attr = ret['Value'][0]['attr']
+        sTokenDict['Total'] = float( attr.get( self.attr[0], 0 ) ) * 1024 * 1024 * 1024
+        sTokenDict['Free'] = float( attr.get( self.attr[1], 0 ) ) * 1024 * 1024 * 1024
+
+    return S_OK(sTokenDict)
+    
